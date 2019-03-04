@@ -1,10 +1,10 @@
 # test 2
 
 library(arm)
-library(reshape2)
 library(tidyverse)
 library(magrittr)
 library(biglm)
+library(data.table)
 
 
 sample <- read_csv("test network data.txt")
@@ -24,13 +24,9 @@ for (i in 1:n) {
 }
 
 for (i in 1:num_rows) {
-  x <- sample$node_1[i]
-  y <- sample$node_2[i]
-  conn <- sample$connection[i]
-
-  wide[[x]][[i]] <- 1
-  wide[[y]][[i]] <- 1
-  wide$connection[i] <- conn
+  wide[[sample$node_1[i]]][[i]] <- 1
+  wide[[sample$node_2[i]]][[i]] <- 1
+  wide$connection[i] <- sample$connection[i]
 }
 
 test_model <- glm(data = wide, connection ~ 0 + ., family = binomial(link = "logit"))
@@ -58,16 +54,22 @@ plot(data = degrees, beta ~ logit)
 
 ####
 
+fwrite(wide, "test_wide.csv")
 
-big_model <- bigglm(data = wide, 
-                formula = connection ~ 0 + a + b + c + d + e + f + g + h + i + j + k,
-                family = binomial(link = "logit"), chunksize = 20)
-summary(big_model)
+glm_read <- function(chunksize, ...){
+  fread("test_wide.csv", nrows = chunksize)
+}
 
-var_names <- str_c(colnames(wide)[-1], collapse = " + ")
+# big_model <- bigglm(data = glm_read(), 
+#                 formula = connection ~ 0 + a + b + c + d + e + f + g + h + i + j + k,
+#                 family = binomial(link = "logit"), chunksize = 20)
+# summary(big_model)
+
+var_names <- str_c(names, collapse = " + ")
 var_names <- str_c("0", var_names, sep = " + ")
 bigglm_formula <- as.formula(str_c("connection", var_names, sep = " ~ "))
 
-big_model2 <- bigglm(data = wide, formula = bigglm_formula, 
-                    family = binomial(link = "logit"), chunksize = 20)
+big_model2 <- bigglm(data = glm_read(chunksize = 50), 
+                    formula = bigglm_formula, 
+                    family = binomial(link = "logit"))
 summary(big_model2)
