@@ -118,3 +118,77 @@ microbenchmark(
 )
 
 # pipes take a tiny bit longer to run. probably not relevant most of the time
+
+dt1 <- function(){
+  fread("public_figure_edges.csv")
+}
+
+dt2 <- function(){
+  fread("public_figure_edges.csv", sep = ",")
+}
+
+microbenchmark(dt1(), dt2(), times = 1000)
+# giving the sep = "," speeds up just a tiny bit, maybe 2%
+
+library(stringr)
+x <- 1:50
+
+str1 <- function(){
+  x1 <- str_c("n", x, sep = "")
+}
+
+str2 <- function(){
+  x2 <- paste0("n", x)
+}
+
+str3 <- function(){
+  x3 <- paste("n", x, sep = "")
+}
+
+microbenchmark(str1(), str2(), str3(), times = 1000)
+# oh good, str_c is faster
+# paste0 is the same speed as paste and sep = ""
+
+library(vroom)
+
+file <- "1k_test_edges.csv"
+
+f1 <- function(){
+  x1 <- fread(file) %>% filter(node_1 > 10000)
+}
+
+f2 <- function(){
+  x2 <- vroom(file) %>% as.data.table()
+}
+
+microbenchmark(f1(), x1 <- fread(file) %>% filter(node_1 > 10000))
+
+i1 <- function(x){
+  1/(1 + exp(-x))
+}
+
+i2 <- function(x){
+  invlogit(x)
+}
+
+microbenchmark(i1(10), i2(10))
+
+l1 <- function(){
+  betas[, 1]
+}
+
+l2 <- function(){
+  unlist(betas[, 1])
+}
+
+microbenchmark(unlist(l1()), l2())
+
+ct1 <- function(){
+  ZYPI <- crossprod(Z, (Y - pi_vec))
+}
+
+ct2 <- function(){
+  ZYPI <- t(Z) %*% (Y - pi_vec)
+}
+
+microbenchmark(ct1(), ct2())

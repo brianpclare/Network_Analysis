@@ -1,0 +1,192 @@
+---
+title: "Network Analysis Report"
+author: "Brian Clare"
+date: "March 9, 2019"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(knitr)
+library(arm)
+library(tidyverse)
+library(magrittr)
+library(data.table)
+options(scipen = 999)
+```
+
+## Facebook Network Analysis
+
+This project is an analysis of data gathered by researchers at Stanford University and available at https://snap.stanford.edu/data/gemsec-Facebook.html under the "Public Figures" dataset.
+
+The structure of the publicly available data is a list of connections between verified Facebook pages of 11,565 public figures, with a total of 67,114 mutual connections. This is relatively sparse then, with an average degree of about 6 out of 11,564 other nodes.
+
+My goal is to fit a logistic regression to model the probability of an edge between any two nodes of the graph (that is, a connection between any two public figures). For any two nodes, call them u and v, we have $P((u, v)  ) = logit^{-1}(\beta_u + \beta_v)$
+
+All analysis is done in R 3.5.1, including this report written using the RMarkdown format.
+
+## Data Cleaning and Transformation
+
+Before fitting a model, I removed 34 rows which listed a node connected to itself. I also adjusted the node names from numeric indicators (0 through 11564) to characters (n0 through n11564). This was done to avoid potential errors with improper variable names. To avoid possible duplication, the data was also arranged such that "node_1" is always the lower numbered of the pair.
+
+The larger data transformation task was adding information on the missing edges. The training data for the logistic regression needs to have every possible connection between nodes; the dataset from SNAP only includes the nodes that are in fact connected. With 11565 nodes, there are ${11565 \choose 2} = 66,868,830$ possible nodes. I filled those in, along with an indicator variable connection to show if that pair of nodes was connected (1) or not (0).
+
+Due to the size of this full training set, it was not possible to fit the logistic regression through regular R packages on a laptop computer. Memory constraints will be discussed more later.
+
+## Testing
+
+In order to build the regression model, I first worked with a much smaller dataset that I constructed. This allowed me to verify the model using an existing GLM function in R. The small test dataset has 13 nodes, labeled a-m, for a total of 78 possible edges, as such:
+
+```{r, echo=FALSE}
+suppressMessages(sample <- read_csv("test network data.txt"))
+```
+```{r include = FALSE}
+kable(head(sample))
+```
+
+The design matrix has 78 rows of 14 columns; one column is the connection, the others are indicators of which nodes are involved in that potential edge
+
+```{r, include = FALSE}
+suppressMessages(design <- read_csv("test_design_matrix.csv"))
+```
+```{r echo = FALSE}
+kable(head(design))
+```
+
+From this matrix we can fit a logistic regression with the glm() function in R, and see the following coefficient estimates:
+
+```{r include = FALSE}
+base_model <- glm(data = design, connection ~ 0 + ., family = binomial(link = "logit"))
+```
+```{r echo = FALSE}
+kable(base_model$coefficients, digits = 4, col.names = c("beta"))
+```
+
+This should generally be trustworthy, and so my implementation of logistic regression should give the same coefficient estimates.
+
+Logistic regression is an iterative fit; we start with a set of initial estimates for the coefficients $\beta_1, \beta_2, ... \beta_n$ and then use the design matrix Z, the current coefficients $\beta^{(t)}$, the predicted probabilities $\pi^{(t)}$ and the true connections Y to update the coefficients and get a new set of estimates $\beta^{(t + 1)}$ as such:
+
+$$\beta^{t + 1} = \beta^{t} + (Z^T W Z)^{-1} (Z^T (Y - \pi^{t}))$$
+
+where W is a diagonal matrix with entries $\pi^{t}$
+
+After several iterations, the estimates $\beta$ should converge to final values. Running quite non-optimized code of this process for 10 iterations took approximately 1 second on my laptop, and got the following coefficient estimates:
+
+```{r include = FALSE, results = 'asis'}
+suppressMessages(test_betas <- read_csv("test_betas.csv"))
+colnames(test_betas) <- c("names", "Initial", "One", "Two", "Three", "Four", "Five", "Six")
+```
+```{r echo = FALSE}
+kable(test_betas[, 1:7], digits = 4)
+```
+
+Although I did run 10 iterations, I've clipped the table as the results had converged by the 5th iteration, and match the glm() output to each decimal point.
+
+The intial values were all $\beta = 0$, which corresponds to all predicted probabilities = 0.5. Alternatively I could have calculated $\beta$s such that all intial predicted probabilities were 0.4487, the proportion of connections in the training data. This shouldn't affect the eventual estimates of $\beta$ but may impact how many iterations are required to converge.
+
+## Selecting a Larger Dataset
+
+Now that I've verified my method, I'll move on to a larger dataset. When the entire design matrix can't fit into memory at once, what I'll need to do is split up the data into chunks of k rows, and for each chunk calculate $(Z^T W Z)$ and  $(Z^T (Y - \pi^{t}))$, then sum up all of those so we can calculate $(Z^T W Z)^{-1} (Z^T (Y - \pi^{t}))$ and the new estimates $\beta^{(t + 1)}$
+
+I should be clear that at no point is $(Z^T W Z)^{-1}$ directly computed; that would be inefficient in terms of memory and processor usage. Instead, through a few steps using functions implemented in Fortran and C, the components of the resulting matrix $(Z^T W Z)^{-1} (Z^T (Y - \pi^{t}))$ are calculated without needing to directly know the invverse $(Z^T W Z)^{-1}$. As these functions are wrappers around Fortran and C functions, they're also quite fast relative to normal R code.
+
+Although memory is no longer a relevant restriction (assuming relatively small size of chunks k), compute time still is. Early tests on the full dataset led me to estimate a computer time of several months for a single iteration. For that reason, my final analysis here is on a smaller subset of the data.
+
+For the full 11565 nodes, I calculated the degree of each node (number of connections including that node). I then selected the 1200 most popular nodes (slightly more due to ties). That amount was chosen after several trials estimating time per iteration for various dataset sizes.
+
+I decided to choose popular nodes instead of nodes at random because the overall data is quite sparse, as mentioned previously. Randomly choosing nodes resulted in a sample with many unconnected nodes that needed to be dropped, and often most remaining nodes only had 1 or 2 connections. Predicted probabilities would almost always be less than 0.5, so the model would predict no connections at all. Selecting high degree nodes gave a more interesting data set for analysis.
+
+## Fitting the large model
+
+```{r, include = FALSE}
+suppressMessages(big_data <- read_csv("top_1287_with_preds.csv"))
+suppressMessages(big_betas <- read_rds("top_1287_betas.rds"))
+```
+```{r, echo = FALSE}
+kable(head(big_data[, 1:3]))
+kable(tail(big_data[, 1:3]))
+```
+
+As you can see from these snippets of my big sample, there still aren't a lot of connections overall. With 1286 nodes, 826,255 possible connections, only 18,967 are actually connected, about 2%
+
+Each iteration of updating the $\beta$ estimates took about 45 minutes on my laptop. I chose a chunk size of 643, primarily because the data would be split into exactly 1285 chunks with no need to worry about partially filled chunks.
+
+```{r, include = FALSE}
+cc <- str_c("Iter ", 1:10)
+colnames(big_betas) <- c("Initial", cc)
+```
+```{r, echo = FALSE}
+kable(head(big_betas[, 1:10]), digits = 4)
+```
+
+A list of the final estimates for all $\beta$s are at the end of this report.
+
+Now that I have coefficients for the model, I can generate predictions for each pair of nodes; as per the model specification given earlier, the prediction is the probability that the two nodes are connected. If we want a binary prediction, we just round - anything above 0.5 turns into 1 = predicted to have an edge, anything below turns into 0 = predicted not to have an edge.
+
+Here are the most and least likely predicted edges, according to the logistic regression:
+
+```{r, include = FALSE}
+colnames(big_data)[4] <- "Probability"
+colnames(big_data)[6] <- "Binary_Prediction"
+big_data %<>% arrange(desc(Probability)) %>% select(-preds2)
+```
+```{r, echo = FALSE}
+kable(head(big_data))
+kable(tail(big_data))
+```
+
+To summarize the correct and incorrect predictions, we can view a confusion matrix
+
+```{r, include = FALSE}
+big_data$connection <- ifelse(big_data$connection == 1, "Edge", "No Edge")
+big_data$Binary_Prediction <- ifelse(big_data$Binary_Prediction == 1, "Predicted Edge", "Predicted No Edge")
+confusion <- table(big_data$connection, big_data$Binary_Prediction)
+```
+```{r, echo = FALSE}
+kable(confusion)
+```
+
+Overall, when the model predicts an edge it is correct 63 / 91 = 69% of the time.
+When the model predicts no edge, it is correct 807620 / 826524 = 97.712% of the time, for a combined accuracy of 97.710%. This only very slightly exceeds the 97.704% accuracy of the null model, predicting no edge in every situation. Overall, due to the severely imbalanced training set, it is safer to predict "no edge", and thus the model has far more false negatives (real edges that were not predicted) than false positives (predicted edges that were not real).
+
+For a different perspective on the logistic model in this situation, let's look at the following plot
+
+```{r, include = FALSE}
+betas_degrees <- fread("betas_degrees.csv") %>% 
+  mutate(logit_degree = logit(degree / 1285))
+```
+```{r, echo = FALSE}
+ggplot(data = betas_degrees) + geom_point(aes(x = logit_degree, y = beta)) +
+  labs(x = "logit(degree / n-1 )")
+```
+
+What's clear from this is that the logistic regression is only going to predict edges based on the overall popularity of the nodes. If you really wanted to predict whether or not two people are friends, you'd probably be interested in a lot of information: if they have mutual friends, if they have common interests, if they live in the same area, if they're close in age, etc. You probably wouldn't just assume two people are friends because they both have a lot of friends (or that two people aren't friends because they both don't have many friends). There are a lot of intracacies to social networks that aren't a part of this logistic regression. However, based on the large but simple input data, it does a good job of identify likely and unlikely connections nonetheless.
+
+## Conclusion
+
+This was a very rewarding project for me to work on. I learned a lot about programming in R, much of which ended up not being relevant but that I may have use for in the future. The biggest takeaway for me in terms of optimizing code in R is that matrices are faster than dataframes (or tibbles, or data.tables), and of course as mentioned previously that using backsolve() and chol() is faster than inverting matrices.
+
+It may be relevant to note that the method I implemented for this project could easily be modified to be run in parallel over multiple processors or machines. With each processor evaluating one chunk, efficiency should increase linearly with the number of processors (up to the number of chunks, but chunk size can be decreased). Fitting a logistic model to the entire 11,565 node dataset could be done in that way.
+
+The source code for this analysis, along with several intermediate datasets I constructed, are available in a repository on my github page https://github.com/brianpclare/Network_Analysis
+
+\newpage
+
+## Full results
+```{r, include = FALSE}
+table_fit <- betas_degrees[, 1:2]
+node_cont <- table_fit$node[324:646]
+beta_cont <- table_fit$beta[324:646]
+node_cont2 <- table_fit$node[647:969]
+beta_cont2 <- table_fit$beta[647:969]
+node_cont3 <- append(table_fit$node[970:1286], rep("-", 6))
+beta_cont3 <- append(table_fit$beta[970:1286], rep(0, 6))
+
+
+table_wide <- tibble(node = table_fit$node[1:323], beta = table_fit$beta[1:323], node_cont, beta_cont, node_cont2, beta_cont2, node_cont3, beta_cont3)
+
+```
+```{r, echo = FALSE}
+kable(table_wide, digits = rep(6, 8), col.names = rep(c("node", "beta"), 4))
+```
+
